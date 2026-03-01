@@ -7,10 +7,10 @@
  *   Client sends:  { type: "subscribe",   pair: "BTC-USDT", stream: "all" | "candles" | "orderbook" }
  *   Client sends:  { type: "unsubscribe", pair: "BTC-USDT", stream: "all" | "candles" | "orderbook" }
  *
- * Server pushes:
- *   { type: "candle_update",    pair, candle }          — every 10 s (if subscribed to candles/all)
- *   { type: "orderbook_update", pair, data }            — every 10 s (if subscribed to orderbook/all)
- *   { type: "error",            message }               — on bad subscription messages
+ * Server pushes every 10 s:
+ *   { type: "candle_update",    pair, candle }   — single latest candle
+ *   { type: "orderbook_update", pair, data }     — full order book snapshot
+ *   { type: "error",            message }        — on bad subscription messages
  */
 
 import { WebSocketServer, WebSocket } from "ws";
@@ -25,16 +25,8 @@ import {
 import { onTick, getMockOrderBook } from "../data/mockData";
 
 // ---------------------------------------------------------------------------
-// Message shapes
+// Outbound message types
 // ---------------------------------------------------------------------------
-
-type StreamMode = "all" | "candles" | "orderbook";
-
-interface SubscribeMessage {
-  type: "subscribe" | "unsubscribe";
-  pair: CryptoPair;
-  stream: StreamMode;
-}
 
 interface CandleUpdateMessage {
   type: "candle_update";
@@ -59,25 +51,31 @@ type OutboundMessage =
   | ErrorMessage;
 
 // ---------------------------------------------------------------------------
+// Inbound message type
+// ---------------------------------------------------------------------------
+
+type StreamMode = "all" | "candles" | "orderbook";
+
+interface SubscribeMessage {
+  type: "subscribe" | "unsubscribe";
+  pair: CryptoPair;
+  stream: StreamMode;
+}
+
+// ---------------------------------------------------------------------------
 // Subscription tracking
 // ---------------------------------------------------------------------------
 
-/**
- * Each connected client has a set of active subscriptions.
- * Key: `${pair}:${stream}` — e.g. "BTC-USDT:candles"
- */
 type SubscriptionKey = `${CryptoPair}:${StreamMode}`;
 
 function makeKey(pair: CryptoPair, stream: StreamMode): SubscriptionKey {
   return `${pair}:${stream}`;
 }
 
-/** Returns true if the client should receive candle updates for this pair. */
 function wantsCandles(subs: Set<SubscriptionKey>, pair: CryptoPair): boolean {
   return subs.has(makeKey(pair, "candles")) || subs.has(makeKey(pair, "all"));
 }
 
-/** Returns true if the client should receive order book updates for this pair. */
 function wantsOrderBook(subs: Set<SubscriptionKey>, pair: CryptoPair): boolean {
   return subs.has(makeKey(pair, "orderbook")) || subs.has(makeKey(pair, "all"));
 }
@@ -122,26 +120,15 @@ function parseMessage(raw: string): SubscribeMessage | null {
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket server setup
+// WebSocket server
 // ---------------------------------------------------------------------------
 
-/**
- * Attaches a WebSocket server to an existing HTTP server instance.
- * Both Express (HTTP) and WebSocket share the same port.
- *
- * @param httpServer — the return value of app.listen()
- */
 export function createWebSocketServer(httpServer: Server): WebSocketServer {
   const wss = new WebSocketServer({ server: httpServer });
-
-  // Map from each connected client to its active subscriptions
   const clients = new Map<WebSocket, Set<SubscriptionKey>>();
 
-  // ---------------------------------------------------------------------------
-  // Hook into the 10-second tick from mockData
-  // ---------------------------------------------------------------------------
+  // On every 10-second tick: push the single updated candle + fresh order book
   onTick((pair, candle) => {
-    // For every connected client, push updates for the pairs they subscribed to
     for (const [ws, subs] of clients) {
       if (wantsCandles(subs, pair)) {
         send(ws, { type: "candle_update", pair, candle });
@@ -156,14 +143,10 @@ export function createWebSocketServer(httpServer: Server): WebSocketServer {
     }
   });
 
-  // ---------------------------------------------------------------------------
-  // Client connection lifecycle
-  // ---------------------------------------------------------------------------
   wss.on("connection", (ws: WebSocket) => {
     clients.set(ws, new Set());
     console.log(`[ws] client connected  — total: ${clients.size}`);
 
-    // ── Incoming message handler ────────────────────────────────────────────
     ws.on("message", (raw: Buffer) => {
       const msg = parseMessage(raw.toString());
 
@@ -187,13 +170,12 @@ export function createWebSocketServer(httpServer: Server): WebSocketServer {
       }
     });
 
-    // ── Disconnect ───────────────────────────────────────────────────────────
     ws.on("close", () => {
       clients.delete(ws);
       console.log(`[ws] client disconnected — total: ${clients.size}`);
     });
 
-    ws.on("error", (err: Error) => {
+    ws.on("error", (err) => {
       console.error("[ws] client error:", err.message);
       clients.delete(ws);
     });
