@@ -1,20 +1,44 @@
-import express, { Request, Response } from "express";
+import express from "express";
+import cors from "cors";
+
+import candlesRouter from "./routes/candles";
+import orderbookRouter from "./routes/orderbook";
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;
+
+// ---------------------------------------------------------------------------
+// Middleware
+// ---------------------------------------------------------------------------
 
 app.use(express.json());
 
-app.get("/api/candles/:pair", (req: Request, res: Response) => {
-  const { pair } = req.params;
-  res.json({ message: `Candles for ${pair}` });
+// Allow requests from the Vite dev server
+app.use(
+  cors({
+    origin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
+app.use("/api/candles", candlesRouter);
+app.use("/api/orderbook", orderbookRouter);
+
+// Health check — useful to verify the server is up
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", timestamp: Date.now() });
 });
 
-app.get("/api/orderbook/:pair", (req: Request, res: Response) => {
-  const { pair } = req.params;
-  res.json({ message: `Order book for ${pair}` });
-});
+// ---------------------------------------------------------------------------
+// Start
+// ---------------------------------------------------------------------------
 
 app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Crypto mock server running at http://localhost:${PORT}`);
+  console.log(`  GET /api/candles/:pair   — BTC-USDT | ETH-USDT | XRP-USDT`);
+  console.log(`  GET /api/orderbook/:pair — BTC-USDT | ETH-USDT | XRP-USDT`);
+  console.log(`  GET /health`);
 });
